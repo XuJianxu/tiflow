@@ -62,6 +62,7 @@ type ScheduleDispatcherCommunicator interface {
 		tableID model.TableID,
 		captureID model.CaptureID,
 		isDelete bool,
+		isPrepare bool,
 		epoch model.ProcessorEpoch,
 	) (done bool, err error)
 

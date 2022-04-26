@@ -35,6 +35,8 @@ type DispatchTableMessage struct {
 	Epoch    ProcessorEpoch `json:"epoch"`
 	ID       TableID        `json:"id"`
 	IsDelete bool           `json:"is-delete"`
+
+	IsPrepare bool `json:"is-prepare"`
 }
 
 // DispatchTableResponseTopic returns a message topic for the result of
@@ -83,6 +85,8 @@ type SyncMessage struct {
 	Running  []TableID
 	Adding   []TableID
 	Removing []TableID
+
+	Preparing []TableID
 }
 
 // Marshal serializes the message into MsgPack format.
