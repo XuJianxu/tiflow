@@ -38,9 +38,12 @@ type TableSet struct {
 
 // TableRecord is a record to be inserted into TableSet.
 type TableRecord struct {
-	TableID   model.TableID
-	CaptureID model.CaptureID
-	Status    TableStatus
+	TableID           model.TableID
+	CaptureID         model.CaptureID
+	Status            TableStatus
+	OriginalCaptureID model.CaptureID
+	RemoveSent        bool
+	AddSent           bool
 }
 
 // Clone returns a copy of the TableSet.
@@ -48,9 +51,12 @@ type TableRecord struct {
 // something not trivially copyable.
 func (r *TableRecord) Clone() *TableRecord {
 	return &TableRecord{
-		TableID:   r.TableID,
-		CaptureID: r.CaptureID,
-		Status:    r.Status,
+		TableID:           r.TableID,
+		CaptureID:         r.CaptureID,
+		Status:            r.Status,
+		OriginalCaptureID: r.OriginalCaptureID,
+		RemoveSent:        r.RemoveSent,
+		AddSent:           r.AddSent,
 	}
 }
 
@@ -60,6 +66,8 @@ type TableStatus int32
 const (
 	// AddingTable is the status when a table is being added.
 	AddingTable = TableStatus(iota) + 1
+	// PreparingTable is the status when a table is preparing.
+	PreparingTable
 	// RemovingTable is the status when a table is being removed.
 	RemovingTable
 	// RunningTable is the status when a table is running.

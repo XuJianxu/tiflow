@@ -28,6 +28,7 @@ import (
 	"github.com/pingcap/tiflow/cdc/entry"
 	"github.com/pingcap/tiflow/cdc/kv"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/processor/pipeline"
 	tablepipeline "github.com/pingcap/tiflow/cdc/processor/pipeline"
 	"github.com/pingcap/tiflow/cdc/puller"
 	"github.com/pingcap/tiflow/cdc/redo"
@@ -101,17 +102,28 @@ func (p *processor) checkReadyForMessages() bool {
 }
 
 // AddTable implements TableExecutor interface.
-func (p *processor) AddTable(ctx cdcContext.Context, tableID model.TableID) (bool, error) {
+func (p *processor) AddTable(
+	ctx cdcContext.Context, tableID model.TableID, isPrepare bool,
+) (bool, error) {
 	if !p.checkReadyForMessages() {
 		return false, nil
 	}
 
 	log.Info("adding table",
+		zap.Bool("isPrepare", isPrepare),
 		zap.Int64("tableID", tableID),
 		cdcContext.ZapFieldChangefeed(ctx))
-	err := p.addTable(ctx, tableID, &model.TableReplicaInfo{})
-	if err != nil {
-		return false, errors.Trace(err)
+	if isPrepare {
+		err := p.addTable(ctx, tableID, &model.TableReplicaInfo{})
+		if err != nil {
+			return false, errors.Trace(err)
+		}
+	} else {
+		t, ok := p.tables[tableID]
+		if !ok {
+			return false, cerror.ErrTableIneligible.GenWithStackByArgs(tableID)
+		}
+		t.Run()
 	}
 	return true, nil
 }
@@ -156,8 +168,8 @@ func (p *processor) IsAddTableFinished(ctx cdcContext.Context, tableID model.Tab
 	}
 	localResolvedTs := p.resolvedTs
 	globalResolvedTs := p.changefeed.Status.ResolvedTs
-	localCheckpointTs := p.agent.GetLastSentCheckpointTs()
-	globalCheckpointTs := p.changefeed.Status.CheckpointTs
+	// localCheckpointTs := p.agent.GetLastSentCheckpointTs()
+	// globalCheckpointTs := p.changefeed.Status.CheckpointTs
 
 	// These two conditions are used to determine if the table's pipeline has finished
 	// initializing and all invariants have been preserved.
@@ -166,10 +178,20 @@ func (p *processor) IsAddTableFinished(ctx cdcContext.Context, tableID model.Tab
 	// the resolved-ts are preserved before communicating with the Owner.
 	//
 	// These conditions are similar to those in the legacy implementation of the Owner/Processor.
-	if table.CheckpointTs() < localCheckpointTs || localCheckpointTs < globalCheckpointTs {
-		return false
-	}
-	if table.ResolvedTs() < localResolvedTs || localResolvedTs < globalResolvedTs {
+	// if table.CheckpointTs() < localCheckpointTs || localCheckpointTs < globalCheckpointTs {
+	// 	return false
+	// }
+	if table.ResolvedTs() < localResolvedTs ||
+		localResolvedTs < globalResolvedTs ||
+		table.Status() != pipeline.TableStatusReady {
+		log.Info("Add Table not finished",
+			cdcContext.ZapFieldChangefeed(ctx),
+			zap.Int64("tableID", tableID),
+			zap.Uint64("tableResolvedTs", table.ResolvedTs()),
+			zap.Uint64("localResolvedTs", localResolvedTs),
+			zap.Uint64("globalResolvedTs", globalResolvedTs),
+			zap.Stringer("status", table.Status()),
+		)
 		return false
 	}
 	log.Info("Add Table finished",

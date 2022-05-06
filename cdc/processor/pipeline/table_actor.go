@@ -263,10 +263,11 @@ func (t *tableActor) start(sdtTableContext context.Context) error {
 		zap.String("tableName", t.tableName),
 		zap.Uint64("quota", t.memoryQuota))
 
+	status := TableStatusInitializing
 	flowController := common.NewTableFlowController(t.memoryQuota)
-	sorterNode := newSorterNode(t.tableName, t.tableID,
-		t.replicaInfo.StartTs, flowController,
-		t.mounter, t.replicaConfig,
+	sorterNode := newSorterNode(
+		t.tableName, t.tableID, t.replicaInfo.StartTs, flowController, t.mounter, t.replicaConfig,
+		&status,
 	)
 	t.sortNode = sorterNode
 	sortActorNodeContext := newContext(sdtTableContext, t.tableName,
@@ -299,9 +300,8 @@ func (t *tableActor) start(sdtTableContext context.Context) error {
 		return errors.Trace(err)
 	}
 
-	actorSinkNode := newSinkNode(t.tableID, t.tableSink,
-		t.replicaInfo.StartTs,
-		t.targetTs, flowController)
+	actorSinkNode := newSinkNode(
+		t.tableID, t.tableSink, t.replicaInfo.StartTs, t.targetTs, flowController, &status)
 	actorSinkNode.initWithReplicaConfig(true, t.replicaConfig)
 	t.sinkNode = actorSinkNode
 
@@ -458,6 +458,13 @@ func (t *tableActor) AsyncStop(targetTs model.Ts) bool {
 func (t *tableActor) Workload() model.WorkloadInfo {
 	// We temporarily set the value to constant 1
 	return workload
+}
+
+// Run transit table state from ready to run.
+func (t *tableActor) Run() {
+	if atomic.CompareAndSwapInt32(&t.sortNode.isRunning, 0, 1) {
+		close(t.sortNode.startRun)
+	}
 }
 
 // Status returns the status of this table pipeline

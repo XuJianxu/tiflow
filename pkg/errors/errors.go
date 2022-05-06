@@ -697,6 +697,9 @@ var (
 			"if you want to ignore these tables, please set ignore_ineligible_table to true",
 		errors.RFCCodeText("CDC:ErrTableIneligible"),
 	)
+	ErrTableNotFound = errors.Normalize(
+		"table (%v) is not found", errors.RFCCodeText("CDC:ErrTableNotFound"),
+	)
 
 	// EtcdWorker related errors. Internal use only.
 	// ErrEtcdTryAgain is used by a PatchFunc to force a transaction abort.

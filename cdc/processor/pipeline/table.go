@@ -53,6 +53,8 @@ type TablePipeline interface {
 	AsyncStop(targetTs model.Ts) bool
 	// Workload returns the workload of this table
 	Workload() model.WorkloadInfo
+	// Run transit table state from ready to run.
+	Run()
 	// Status returns the status of this table pipeline
 	Status() TableStatus
 	// Cancel stops this table pipeline immediately and destroy all resources created by this table pipeline
@@ -136,6 +138,11 @@ func (t *tablePipelineImpl) Workload() model.WorkloadInfo {
 	return workload
 }
 
+// Run transit table state from ready to run.
+func (t *tablePipelineImpl) Run() {
+	close(t.sorterNode.startRun)
+}
+
 // Status returns the status of this table pipeline, sinkNode maintains the table status
 func (t *tablePipelineImpl) Status() TableStatus {
 	return t.sinkNode.Status()
@@ -204,10 +211,11 @@ func NewTablePipeline(ctx cdcContext.Context,
 		runnerSize++
 	}
 
+	status := TableStatusInitializing
 	p := pipeline.NewPipeline(ctx, 500*time.Millisecond, runnerSize, defaultOutputChannelSize)
-	sorterNode := newSorterNode(tableName, tableID, replicaInfo.StartTs,
-		flowController, mounter, replConfig)
-	sinkNode := newSinkNode(tableID, sink, replicaInfo.StartTs, targetTs, flowController)
+	sorterNode := newSorterNode(
+		tableName, tableID, replicaInfo.StartTs, flowController, mounter, replConfig, &status)
+	sinkNode := newSinkNode(tableID, sink, replicaInfo.StartTs, targetTs, flowController, &status)
 
 	p.AppendNode(ctx, "puller", newPullerNode(tableID, replicaInfo, tableName, changefeed))
 	p.AppendNode(ctx, "sorter", sorterNode)

@@ -60,6 +60,7 @@ const (
 )
 
 type moveTableManager interface {
+	GetTableID() []model.TableID
 	// Add adds a table to the move table manager.
 	// It returns false **if the table is already being moved manually**.
 	Add(tableID model.TableID, target model.CaptureID) (ok bool)
@@ -104,6 +105,16 @@ func newMoveTableManager() moveTableManager {
 	return &moveTableManagerImpl{
 		moveTableJobs: make(map[model.TableID]*moveTableJob),
 	}
+}
+
+func (m *moveTableManagerImpl) GetTableID() []model.TableID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]model.TableID, 0, len(m.moveTableJobs))
+	for id := range m.moveTableJobs {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (m *moveTableManagerImpl) Add(tableID model.TableID, target model.CaptureID) bool {
@@ -175,9 +186,9 @@ func (m *moveTableManagerImpl) GetTargetByTableID(tableID model.TableID) (model.
 	// Only after the table has been removed by the moveTableManager,
 	// can we provide the target. Otherwise, we risk interfering with
 	// other operations.
-	if job.status != moveTableJobStatusRemoved {
-		return "", false
-	}
+	// if job.status != moveTableJobStatusRemoved {
+	// 	return "", false
+	// }
 
 	return job.target, true
 }

@@ -62,6 +62,10 @@ type sorterNode struct {
 	// The latest barrier ts that sorter has received.
 	barrierTs model.Ts
 
+	status    *TableStatus
+	isRunning int32
+	startRun  chan struct{}
+
 	replConfig *config.ReplicaConfig
 
 	// isTableActorMode identify if the sorter node is run is actor mode, todo: remove it after GA
@@ -71,7 +75,7 @@ type sorterNode struct {
 func newSorterNode(
 	tableName string, tableID model.TableID, startTs model.Ts,
 	flowController tableFlowController, mounter entry.Mounter,
-	replConfig *config.ReplicaConfig,
+	replConfig *config.ReplicaConfig, status *TableStatus,
 ) *sorterNode {
 	return &sorterNode{
 		tableName:      tableName,
@@ -80,6 +84,8 @@ func newSorterNode(
 		mounter:        mounter,
 		resolvedTs:     startTs,
 		barrierTs:      startTs,
+		status:         status,
+		startRun:       make(chan struct{}),
 		replConfig:     replConfig,
 	}
 }
@@ -169,6 +175,22 @@ func (n *sorterNode) start(
 			case <-metricsTicker.C:
 				metricsTableMemoryHistogram.Observe(float64(n.flowController.GetConsumption()))
 			case msg, ok := <-output:
+				// Step from Initializing to Ready
+				if n.status.Load() == TableStatusInitializing {
+					n.status.Store(TableStatusReady)
+				}
+				// Step from Ready to Running
+				select {
+				case <-stdCtx.Done():
+					return nil
+
+				case <-n.startRun:
+					// Wait for owner signal
+					if n.status.Load() == TableStatusInitializing {
+						n.status.Store(TableStatusRunning)
+					}
+				}
+
 				if !ok {
 					// sorter output channel closed
 					return nil

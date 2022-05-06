@@ -127,14 +127,16 @@ func (s *schedulerV2) DispatchTable(
 	tableID model.TableID,
 	captureID model.CaptureID,
 	isDelete bool,
+	isPrepare bool,
 	epoch model.ProcessorEpoch,
 ) (done bool, err error) {
 	topic := model.DispatchTableTopic(changeFeedID)
 	message := &model.DispatchTableMessage{
-		OwnerRev: ctx.GlobalVars().OwnerRevision,
-		ID:       tableID,
-		IsDelete: isDelete,
-		Epoch:    epoch,
+		OwnerRev:  ctx.GlobalVars().OwnerRevision,
+		ID:        tableID,
+		IsDelete:  isDelete,
+		IsPrepare: isPrepare,
+		Epoch:     epoch,
 	}
 
 	defer func() {
