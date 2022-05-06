@@ -128,15 +128,17 @@ func (s *schedulerV2) DispatchTable(
 	captureID model.CaptureID,
 	isDelete bool,
 	isPrepare bool,
+	checkpoint model.Ts,
 	epoch model.ProcessorEpoch,
 ) (done bool, err error) {
 	topic := model.DispatchTableTopic(changeFeedID)
 	message := &model.DispatchTableMessage{
-		OwnerRev:  ctx.GlobalVars().OwnerRevision,
-		ID:        tableID,
-		IsDelete:  isDelete,
-		IsPrepare: isPrepare,
-		Epoch:     epoch,
+		OwnerRev:   ctx.GlobalVars().OwnerRevision,
+		ID:         tableID,
+		IsDelete:   isDelete,
+		IsPrepare:  isPrepare,
+		Checkpoint: checkpoint,
+		Epoch:      epoch,
 	}
 
 	defer func() {
@@ -147,6 +149,7 @@ func (s *schedulerV2) DispatchTable(
 			zap.Any("message", message),
 			zap.Any("successful", done),
 			zap.String("changefeedID", changeFeedID),
+			zap.Uint64("checkpoint", checkpoint),
 			zap.String("captureID", captureID))
 	}()
 
@@ -265,7 +268,7 @@ func (s *schedulerV2) registerPeerMessageHandlers(ctx context.Context) (ret erro
 		func(sender string, messageI interface{}) error {
 			message := messageI.(*model.DispatchTableResponseMessage)
 			s.stats.RecordDispatchResponse()
-			s.OnAgentFinishedTableOperation(sender, message.ID, message.Epoch)
+			s.OnAgentFinishedTableOperation(sender, message.ID, message.Epoch, message.Checkpoint)
 			return nil
 		})
 	if err != nil {

@@ -46,10 +46,10 @@ type Agent interface {
 // to adapt the current Processor implementation to it.
 // TODO find a way to make the semantics easier to understand.
 type TableExecutor interface {
-	AddTable(ctx context.Context, tableID model.TableID, isPrepared bool) (done bool, err error)
+	AddTable(ctx context.Context, tableID model.TableID, isPrepared bool, checkpointTs model.Ts) (done bool, err error)
 	RemoveTable(ctx context.Context, tableID model.TableID) (done bool, err error)
 	IsAddTableFinished(ctx context.Context, tableID model.TableID) (done bool)
-	IsRemoveTableFinished(ctx context.Context, tableID model.TableID) (done bool)
+	IsRemoveTableFinished(ctx context.Context, tableID model.TableID) (model.Ts, bool)
 
 	// GetAllCurrentTables should return all tables that are being run,
 	// being added and being removed.
@@ -71,7 +71,7 @@ type TableExecutor interface {
 // by the owner.
 type ProcessorMessenger interface {
 	// FinishTableOperation notifies the owner that a table operation has finished.
-	FinishTableOperation(ctx context.Context, tableID model.TableID, epoch model.ProcessorEpoch) (done bool, err error)
+	FinishTableOperation(ctx context.Context, tableID model.TableID, epoch model.ProcessorEpoch, checkpoint model.Ts) (done bool, err error)
 	// SyncTaskStatuses informs the owner of the processor's current internal state.
 	SyncTaskStatuses(ctx context.Context, epoch model.ProcessorEpoch, adding, removing, running []model.TableID) (done bool, err error)
 	// SendCheckpoint sends the owner the processor's local watermarks, i.e., checkpoint-ts and resolved-ts.
@@ -167,10 +167,11 @@ const (
 )
 
 type agentOperation struct {
-	TableID   model.TableID
-	IsDelete  bool
-	IsPrepare bool
-	Epoch     model.ProcessorEpoch
+	TableID      model.TableID
+	IsDelete     bool
+	IsPrepare    bool
+	CheckpointTs model.Ts
+	Epoch        model.ProcessorEpoch
 
 	// FromOwnerID is for debugging purposesFromOwnerID
 	FromOwnerID model.CaptureID
@@ -226,7 +227,8 @@ func (a *BaseAgent) Tick(ctx context.Context) error {
 			continue
 		}
 		if _, ok := a.tableOperations[op.TableID]; ok {
-			a.logger.DPanic("duplicate operation", zap.Any("op", op))
+			a.logger.DPanic("duplicate operation",
+				zap.Any("op", op), zap.Any("current", a.tableOperations[op.TableID]))
 			return cerrors.ErrProcessorDuplicateOperations.GenWithStackByArgs(op.TableID)
 		}
 		a.tableOperations[op.TableID] = op
@@ -290,13 +292,14 @@ func (a *BaseAgent) sendSync(ctx context.Context) (bool, error) {
 // processOperations tries to make progress on each pending table operations.
 // It queries the executor for the current status of each table.
 func (a *BaseAgent) processOperations(ctx context.Context) error {
+	checkpointTs := model.Ts(0)
 	for tableID, op := range a.tableOperations {
 		switch op.status {
 		case operationReceived:
 			a.logger.Info("Agent start processing operation", zap.Any("op", op))
 			if !op.IsDelete {
 				// add table
-				done, err := a.executor.AddTable(ctx, op.TableID, op.IsPrepare)
+				done, err := a.executor.AddTable(ctx, op.TableID, op.IsPrepare, op.CheckpointTs)
 				if err != nil {
 					return errors.Trace(err)
 				}
@@ -320,7 +323,7 @@ func (a *BaseAgent) processOperations(ctx context.Context) error {
 			if !op.IsDelete {
 				done = a.executor.IsAddTableFinished(ctx, op.TableID)
 			} else {
-				done = a.executor.IsRemoveTableFinished(ctx, op.TableID)
+				checkpointTs, done = a.executor.IsRemoveTableFinished(ctx, op.TableID)
 			}
 			if !done {
 				break
@@ -328,8 +331,9 @@ func (a *BaseAgent) processOperations(ctx context.Context) error {
 			op.status = operationFinished
 			fallthrough
 		case operationFinished:
-			a.logger.Info("Agent finish processing operation", zap.Any("op", op))
-			done, err := a.communicator.FinishTableOperation(ctx, op.TableID, a.getEpoch())
+			a.logger.Info("Agent finish processing operation",
+				zap.Any("op", op), zap.Uint64("checkpoint", checkpointTs))
+			done, err := a.communicator.FinishTableOperation(ctx, op.TableID, a.getEpoch(), checkpointTs)
 			if err != nil {
 				return errors.Trace(err)
 			}
@@ -367,6 +371,7 @@ func (a *BaseAgent) OnOwnerDispatchedTask(
 	tableID model.TableID,
 	isDelete bool,
 	isPrepare bool,
+	checkpointTs model.Ts,
 	epoch model.ProcessorEpoch,
 ) {
 	if !a.updateOwnerInfo(ownerCaptureID, ownerRev) {
@@ -380,12 +385,13 @@ func (a *BaseAgent) OnOwnerDispatchedTask(
 	defer a.pendingOpsMu.Unlock()
 
 	op := &agentOperation{
-		TableID:     tableID,
-		IsDelete:    isDelete,
-		IsPrepare:   isPrepare,
-		Epoch:       epoch,
-		FromOwnerID: ownerCaptureID,
-		status:      operationReceived,
+		TableID:      tableID,
+		IsDelete:     isDelete,
+		IsPrepare:    isPrepare,
+		CheckpointTs: checkpointTs,
+		Epoch:        epoch,
+		FromOwnerID:  ownerCaptureID,
+		status:       operationReceived,
 	}
 	a.pendingOps.PushBack(op)
 

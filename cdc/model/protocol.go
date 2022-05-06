@@ -36,7 +36,8 @@ type DispatchTableMessage struct {
 	ID       TableID        `json:"id"`
 	IsDelete bool           `json:"is-delete"`
 
-	IsPrepare bool `json:"is-prepare"`
+	IsPrepare  bool `json:"is-prepare"`
+	Checkpoint Ts   `json:"checkpoint"`
 }
 
 // DispatchTableResponseTopic returns a message topic for the result of
@@ -49,6 +50,8 @@ func DispatchTableResponseTopic(changefeedID ChangeFeedID) p2p.Topic {
 type DispatchTableResponseMessage struct {
 	ID    TableID        `json:"id"`
 	Epoch ProcessorEpoch `json:"epoch"`
+
+	Checkpoint Ts `json:"checkpoint"`
 }
 
 // AnnounceTopic returns a message topic for announcing an ownership change.

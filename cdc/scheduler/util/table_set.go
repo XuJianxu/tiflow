@@ -44,6 +44,7 @@ type TableRecord struct {
 	OriginalCaptureID model.CaptureID
 	RemoveSent        bool
 	AddSent           bool
+	RemovedCheckpoint model.Ts
 }
 
 // Clone returns a copy of the TableSet.
@@ -57,6 +58,7 @@ func (r *TableRecord) Clone() *TableRecord {
 		OriginalCaptureID: r.OriginalCaptureID,
 		RemoveSent:        r.RemoveSent,
 		AddSent:           r.AddSent,
+		RemovedCheckpoint: r.RemovedCheckpoint,
 	}
 }
 

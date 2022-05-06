@@ -191,6 +191,7 @@ func (a *agentImpl) FinishTableOperation(
 	ctx context.Context,
 	tableID model.TableID,
 	epoch model.ProcessorEpoch,
+	checkpointTs model.Ts,
 ) (done bool, err error) {
 	topic := model.SyncTopic(a.changeFeed)
 	if !a.Barrier(ctx) {
@@ -204,7 +205,11 @@ func (a *agentImpl) FinishTableOperation(
 		}
 	}
 
-	message := &model.DispatchTableResponseMessage{ID: tableID, Epoch: epoch}
+	message := &model.DispatchTableResponseMessage{
+		ID:         tableID,
+		Epoch:      epoch,
+		Checkpoint: checkpointTs,
+	}
 	defer func() {
 		if err != nil {
 			return
@@ -447,6 +452,7 @@ func (a *agentImpl) registerPeerMessageHandlers() (ret error) {
 				message.ID,
 				message.IsDelete,
 				message.IsPrepare,
+				message.Checkpoint,
 				message.Epoch)
 			return nil
 		})

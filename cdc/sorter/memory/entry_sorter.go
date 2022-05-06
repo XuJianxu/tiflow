@@ -49,6 +49,9 @@ func NewEntrySorter() *EntrySorter {
 	}
 }
 
+func (es *EntrySorter) UpdateInitialCheckpoint(checkpoint model.Ts) {
+}
+
 // Run runs EntrySorter
 func (es *EntrySorter) Run(ctx context.Context) error {
 	changefeedID := util.ChangefeedIDFromCtx(ctx)

@@ -64,7 +64,7 @@ type sorterNode struct {
 
 	status    *TableStatus
 	isRunning int32
-	startRun  chan struct{}
+	startRun  chan model.Ts
 
 	replConfig *config.ReplicaConfig
 
@@ -85,7 +85,7 @@ func newSorterNode(
 		resolvedTs:     startTs,
 		barrierTs:      startTs,
 		status:         status,
-		startRun:       make(chan struct{}),
+		startRun:       make(chan model.Ts, 1),
 		replConfig:     replConfig,
 	}
 }
@@ -164,6 +164,7 @@ func (n *sorterNode) start(
 		metricsTicker := time.NewTicker(flushMemoryMetricsDuration)
 		defer metricsTicker.Stop()
 
+		initialCheckpointTs := model.Ts(0)
 		for {
 			// We must call `sorter.Output` before receiving resolved events.
 			// Skip calling `sorter.Output` and caching output channel may fail
@@ -175,6 +176,10 @@ func (n *sorterNode) start(
 			case <-metricsTicker.C:
 				metricsTableMemoryHistogram.Observe(float64(n.flowController.GetConsumption()))
 			case msg, ok := <-output:
+				if !ok {
+					// sorter output channel closed
+					return nil
+				}
 				// Step from Initializing to Ready
 				if n.status.Load() == TableStatusInitializing {
 					n.status.Store(TableStatusReady)
@@ -184,20 +189,22 @@ func (n *sorterNode) start(
 				case <-stdCtx.Done():
 					return nil
 
-				case <-n.startRun:
+				case ts := <-n.startRun:
 					// Wait for owner signal
 					if n.status.Load() == TableStatusInitializing {
 						n.status.Store(TableStatusRunning)
+						initialCheckpointTs = ts
 					}
 				}
 
-				if !ok {
-					// sorter output channel closed
-					return nil
-				}
 				if msg == nil || msg.RawKV == nil {
 					log.Panic("unexpected empty msg", zap.Reflect("msg", msg))
 				}
+				if initialCheckpointTs >= msg.CRTs {
+					// Ignore messages are less than initial checkpoint ts.
+					continue
+				}
+
 				if msg.RawKV.OpType != model.OpTypeResolved {
 					err := n.mounter.DecodeEvent(ctx, msg)
 					if err != nil {

@@ -46,4 +46,6 @@ type EventSorter interface {
 	//  	}
 	//  }
 	Output() <-chan *model.PolymorphicEvent
+
+	UpdateInitialCheckpoint(checkpoint model.Ts)
 }

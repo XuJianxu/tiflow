@@ -461,8 +461,9 @@ func (t *tableActor) Workload() model.WorkloadInfo {
 }
 
 // Run transit table state from ready to run.
-func (t *tableActor) Run() {
+func (t *tableActor) Run(checkpointTs model.Ts) {
 	if atomic.CompareAndSwapInt32(&t.sortNode.isRunning, 0, 1) {
+		t.sortNode.startRun <- checkpointTs
 		close(t.sortNode.startRun)
 	}
 }

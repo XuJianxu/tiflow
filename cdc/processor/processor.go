@@ -103,7 +103,7 @@ func (p *processor) checkReadyForMessages() bool {
 
 // AddTable implements TableExecutor interface.
 func (p *processor) AddTable(
-	ctx cdcContext.Context, tableID model.TableID, isPrepare bool,
+	ctx cdcContext.Context, tableID model.TableID, isPrepare bool, checkpointTs model.Ts,
 ) (bool, error) {
 	if !p.checkReadyForMessages() {
 		return false, nil
@@ -111,6 +111,7 @@ func (p *processor) AddTable(
 
 	log.Info("adding table",
 		zap.Bool("isPrepare", isPrepare),
+		zap.Uint64("checkpoint", checkpointTs),
 		zap.Int64("tableID", tableID),
 		cdcContext.ZapFieldChangefeed(ctx))
 	if isPrepare {
@@ -123,7 +124,7 @@ func (p *processor) AddTable(
 		if !ok {
 			return false, cerror.ErrTableIneligible.GenWithStackByArgs(tableID)
 		}
-		t.Run()
+		t.Run(checkpointTs)
 	}
 	return true, nil
 }
@@ -201,9 +202,9 @@ func (p *processor) IsAddTableFinished(ctx cdcContext.Context, tableID model.Tab
 }
 
 // IsRemoveTableFinished implements TableExecutor interface.
-func (p *processor) IsRemoveTableFinished(ctx cdcContext.Context, tableID model.TableID) bool {
+func (p *processor) IsRemoveTableFinished(ctx cdcContext.Context, tableID model.TableID) (model.Ts, bool) {
 	if !p.checkReadyForMessages() {
-		return false
+		return 0, false
 	}
 
 	table, exist := p.tables[tableID]
@@ -211,14 +212,14 @@ func (p *processor) IsRemoveTableFinished(ctx cdcContext.Context, tableID model.
 		log.Panic("table which was deleted is not found",
 			cdcContext.ZapFieldChangefeed(ctx),
 			zap.Int64("tableID", tableID))
-		return true
+		return 0, true
 	}
 	if table.Status() != tablepipeline.TableStatusStopped {
 		log.Debug("the table is still not stopped",
 			cdcContext.ZapFieldChangefeed(ctx),
 			zap.Uint64("checkpointTs", table.CheckpointTs()),
 			zap.Int64("tableID", tableID))
-		return false
+		return 0, false
 	}
 
 	table.Cancel()
@@ -228,7 +229,7 @@ func (p *processor) IsRemoveTableFinished(ctx cdcContext.Context, tableID model.
 		cdcContext.ZapFieldChangefeed(ctx),
 		zap.Int64("tableID", tableID))
 
-	return true
+	return table.CheckpointTs(), true
 }
 
 // GetAllCurrentTables implements TableExecutor interface.
@@ -825,6 +826,11 @@ func (p *processor) handlePosition(currentTs int64) {
 		minResolvedTs = p.schemaStorage.ResolvedTs()
 	}
 	for _, table := range p.tables {
+		status := table.Status()
+		if status == pipeline.TableStatusInitializing ||
+			status == pipeline.TableStatusReady {
+			continue
+		}
 		ts := table.ResolvedTs()
 		if ts < minResolvedTs {
 			minResolvedTs = ts
@@ -835,6 +841,11 @@ func (p *processor) handlePosition(currentTs int64) {
 	minCheckpointTs := minResolvedTs
 	minCheckpointTableID := int64(0)
 	for _, table := range p.tables {
+		status := table.Status()
+		if status == pipeline.TableStatusInitializing ||
+			status == pipeline.TableStatusReady {
+			continue
+		}
 		ts := table.CheckpointTs()
 		if ts < minCheckpointTs {
 			minCheckpointTs = ts

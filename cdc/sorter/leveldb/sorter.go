@@ -83,6 +83,8 @@ type Sorter struct {
 
 	outputCh chan *model.PolymorphicEvent
 
+	initialCheckpointTs *uint64
+
 	closed int32
 }
 
@@ -130,6 +132,7 @@ func NewSorter(
 
 	outputCh := make(chan *model.PolymorphicEvent, sorterOutputCap)
 
+	initialCheckpointTs := uint64(0)
 	r := &reader{
 		common: c,
 
@@ -139,6 +142,7 @@ func NewSorter(
 			maxCommitTs:         uint64(0),
 			maxResolvedTs:       uint64(0),
 			exhaustedResolvedTs: uint64(0),
+			initialCheckpointTs: &initialCheckpointTs,
 
 			readerID:     actorID,
 			readerRouter: readerRouter,
@@ -176,6 +180,8 @@ func NewSorter(
 		readerRouter:  readerRouter,
 		ReaderActorID: actorID,
 		outputCh:      outputCh,
+
+		initialCheckpointTs: &initialCheckpointTs,
 	}, nil
 }
 
@@ -253,6 +259,10 @@ func (ls *Sorter) Output() <-chan *model.PolymorphicEvent {
 	//       It may waste CPU and be a bottleneck.
 	_ = ls.readerRouter.Send(ls.ReaderActorID, msg)
 	return ls.outputCh
+}
+
+func (ls *Sorter) UpdateInitialCheckpoint(checkpoint model.Ts) {
+	atomic.StoreUint64(ls.initialCheckpointTs, checkpoint)
 }
 
 // cleanup cleans up sorter's data.

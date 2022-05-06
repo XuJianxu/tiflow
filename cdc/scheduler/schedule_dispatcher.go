@@ -63,6 +63,7 @@ type ScheduleDispatcherCommunicator interface {
 		captureID model.CaptureID,
 		isDelete bool,
 		isPrepare bool,
+		checkpoint model.Ts,
 		epoch model.ProcessorEpoch,
 	) (done bool, err error)
 
@@ -203,22 +204,25 @@ func (s *BaseScheduleDispatcher) Tick(
 
 	// Checks for checkpoint regression as a safety measure.
 	if s.checkpointTs > checkpointTs {
-		s.logger.Panic("checkpointTs regressed",
-			zap.Uint64("old", s.checkpointTs),
-			zap.Uint64("new", checkpointTs))
+		// s.logger.Panic("checkpointTs regressed",
+		// 	zap.Uint64("old", s.checkpointTs),
+		// 	zap.Uint64("new", checkpointTs))
+	} else {
+		// Updates the internally maintained last checkpoint-ts.
+		s.checkpointTs = checkpointTs
 	}
-	// Updates the internally maintained last checkpoint-ts.
-	s.checkpointTs = checkpointTs
 
 	// Makes sure that captures have all been synchronized before proceeding.
 	done, err := s.syncCaptures(ctx)
 	if err != nil {
+		s.logger.Info("schedulerV2 checkpoint can not proceed")
 		return CheckpointCannotProceed, CheckpointCannotProceed, errors.Trace(err)
 	}
 	if !done {
 		// Returns early if not all captures have synced their states with us.
 		// We need to know all captures' status in order to proceed.
 		// This is crucial for ensuring that no table is double-scheduled.
+		s.logger.Info("schedulerV2 checkpoint can not proceed")
 		return CheckpointCannotProceed, CheckpointCannotProceed, nil
 	}
 
@@ -250,9 +254,11 @@ func (s *BaseScheduleDispatcher) Tick(
 	for _, tableID := range toAdd {
 		ok, err := s.addTable(ctx, tableID)
 		if err != nil {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, errors.Trace(err)
 		}
 		if !ok {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, nil
 		}
 	}
@@ -269,50 +275,95 @@ func (s *BaseScheduleDispatcher) Tick(
 
 		ok, err := s.removeTable(ctx, tableID)
 		if err != nil {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, errors.Trace(err)
 		}
 		if !ok {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, nil
 		}
 	}
 
 	checkAllTasksNormal := func() bool {
-		return s.tables.CountTableByStatus(util.RunningTable) == len(currentTables) &&
-			s.tables.CountTableByStatus(util.PreparingTable) == 0 &&
-			s.tables.CountTableByStatus(util.AddingTable) == 0 &&
-			s.tables.CountTableByStatus(util.RemovingTable) == 0
+		total := len(currentTables)
+		tables := s.tables.GetAllTables()
+		var running, preparing, adding, removing, moving int
+		for _, table := range tables {
+			if table.OriginalCaptureID != "" {
+				moving++
+			}
+			switch table.Status {
+			case util.RunningTable:
+				running++
+			case util.PreparingTable:
+				preparing++
+			case util.AddingTable:
+				adding++
+			case util.RemovingTable:
+				removing++
+			default:
+				s.logger.Panic("unknown table status")
+			}
+		}
+		ok := running+preparing == total && preparing == moving && adding == 0 && removing == 0
+		fields := []zap.Field{
+			zap.Int("total", total),
+			zap.Int("moving", moving),
+			zap.Int("running", running),
+			zap.Int("preparing", preparing),
+			zap.Int("adding", adding),
+			zap.Int("removing", removing),
+		}
+		if !ok {
+			s.logger.Info("schedulerV2 check all task failed", fields...)
+		} else if moving != 0 {
+			s.logger.Info("schedulerV2 check all task ok, move table", fields...)
+		}
+		return ok
 	}
 	if !checkAllTasksNormal() {
+		s.logger.Info("schedulerV2 checkpoint can not proceed")
 		return CheckpointCannotProceed, CheckpointCannotProceed, nil
 	}
 
 	// handleMoveTableJobs tries to execute user-specified manual move table jobs.
 	// ok, err := s.handleMoveTableJobs(ctx)
 	// if err != nil {
+	// 	s.logger.Info("schedulerV2 checkpoint can not proceed")
 	// 	return CheckpointCannotProceed, CheckpointCannotProceed, errors.Trace(err)
 	// }
 	// if !ok {
+	// 	s.logger.Info("schedulerV2 checkpoint can not proceed")
 	// 	return CheckpointCannotProceed, CheckpointCannotProceed, nil
 	// }
 	// if !checkAllTasksNormal() {
+	// 	s.logger.Info("schedulerV2 checkpoint can not proceed")
 	// 	return CheckpointCannotProceed, CheckpointCannotProceed, nil
 	// }
 
 	if s.needRebalance {
 		ok, err := s.rebalance(ctx)
 		if err != nil {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, errors.Trace(err)
 		}
 		if !ok {
+			s.logger.Info("schedulerV2 checkpoint can not proceed")
 			return CheckpointCannotProceed, CheckpointCannotProceed, nil
 		}
 		s.needRebalance = false
 	}
 	if !checkAllTasksNormal() {
+		s.logger.Info("schedulerV2 checkpoint can not proceed")
 		return CheckpointCannotProceed, CheckpointCannotProceed, nil
 	}
 
 	newCheckpointTs, resolvedTs = s.calculateTs()
+	if len(toAdd) != 0 {
+		s.logger.Info("schedulerV2 checkpoint proceed",
+			zap.Uint64("checkpoint", newCheckpointTs),
+			zap.Uint64("resolvedTs", resolvedTs))
+	}
 	return
 }
 
@@ -454,8 +505,12 @@ func (s *BaseScheduleDispatcher) addTable(
 		zap.Bool("moveTable", isManualMove), zap.String("target", target))
 	if !ok || (isManualMove && record.CaptureID != target) {
 		epoch := s.captureStatus[target].Epoch
+		removedCheckpoint := model.Ts(0)
+		if record != nil {
+			removedCheckpoint = record.RemovedCheckpoint
+		}
 		ok, err = s.communicator.DispatchTable(
-			ctx, s.changeFeedID, tableID, target, false, true, epoch)
+			ctx, s.changeFeedID, tableID, target, false, true, removedCheckpoint, epoch)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
@@ -498,7 +553,7 @@ func (s *BaseScheduleDispatcher) addTable(
 		record.Status == util.RemovingTable && !record.RemoveSent {
 		epoch := s.captureStatus[record.OriginalCaptureID].Epoch
 		ok, err = s.communicator.DispatchTable(
-			ctx, s.changeFeedID, tableID, record.OriginalCaptureID, true, false, epoch)
+			ctx, s.changeFeedID, tableID, record.OriginalCaptureID, true, false, record.RemovedCheckpoint, epoch)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
@@ -523,7 +578,7 @@ func (s *BaseScheduleDispatcher) addTable(
 		target = record.CaptureID
 		epoch := s.captureStatus[target].Epoch
 		ok, err = s.communicator.DispatchTable(
-			ctx, s.changeFeedID, tableID, target, false, false, epoch)
+			ctx, s.changeFeedID, tableID, target, false, false, record.RemovedCheckpoint, epoch)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
@@ -564,7 +619,7 @@ func (s *BaseScheduleDispatcher) removeTable(
 	captureID := record.CaptureID
 	epoch := s.captureStatus[captureID].Epoch
 	ok, err = s.communicator.DispatchTable(
-		ctx, s.changeFeedID, tableID, captureID, true, false, epoch)
+		ctx, s.changeFeedID, tableID, captureID, true, false, record.RemovedCheckpoint, epoch)
 	if err != nil {
 		return false, errors.Trace(err)
 	}
@@ -635,7 +690,7 @@ func (s *BaseScheduleDispatcher) rebalance(ctx context.Context) (done bool, err 
 		epoch := s.captureStatus[record.CaptureID].Epoch
 		// Removes the table from the current capture
 		ok, err := s.communicator.DispatchTable(
-			ctx, s.changeFeedID, record.TableID, record.CaptureID, true, false, epoch)
+			ctx, s.changeFeedID, record.TableID, record.CaptureID, true, false, record.RemovedCheckpoint, epoch)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
@@ -655,6 +710,7 @@ func (s *BaseScheduleDispatcher) OnAgentFinishedTableOperation(
 	captureID model.CaptureID,
 	tableID model.TableID,
 	epoch model.ProcessorEpoch,
+	checkpoint model.Ts,
 ) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -715,6 +771,7 @@ func (s *BaseScheduleDispatcher) OnAgentFinishedTableOperation(
 	case util.RemovingTable:
 		if record.OriginalCaptureID != "" {
 			record.Status = util.AddingTable
+			record.RemovedCheckpoint = checkpoint
 			s.tables.UpdateTableRecord(record)
 			logger.Info("owner received dispatch finished, removing -> adding")
 		} else {

@@ -101,6 +101,9 @@ func ResetGlobalPoolWithoutCleanup() {
 	pool = nil
 }
 
+func (s *Sorter) UpdateInitialCheckpoint(checkpoint model.Ts) {
+}
+
 // Run implements the EventSorter interface
 func (s *Sorter) Run(ctx context.Context) error {
 	failpoint.Inject("sorterDebug", func() {

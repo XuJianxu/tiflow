@@ -54,7 +54,7 @@ type TablePipeline interface {
 	// Workload returns the workload of this table
 	Workload() model.WorkloadInfo
 	// Run transit table state from ready to run.
-	Run()
+	Run(checkpointTs model.Ts)
 	// Status returns the status of this table pipeline
 	Status() TableStatus
 	// Cancel stops this table pipeline immediately and destroy all resources created by this table pipeline
@@ -139,7 +139,7 @@ func (t *tablePipelineImpl) Workload() model.WorkloadInfo {
 }
 
 // Run transit table state from ready to run.
-func (t *tablePipelineImpl) Run() {
+func (t *tablePipelineImpl) Run(checkpointTs model.Ts) {
 	close(t.sorterNode.startRun)
 }
 
